@@ -10,7 +10,7 @@ import motor.motor_asyncio
 import google.generativeai as genai
 from bson.objectid import ObjectId
 
-# Load .env
+# Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
@@ -18,16 +18,12 @@ if not GOOGLE_API_KEY:
 genai.configure(api_key=GOOGLE_API_KEY)
 
 MONGODB_URI = os.getenv("MONGODB_URI")
-MONGODB_DB = os.getenv("MONGODB_DB", "appdb")
+MONGODB_DB = os.getenv("MONGODB_DB", "appdb")  # Default DB
 if not MONGODB_URI:
     raise RuntimeError("Set MONGODB_URI in .env or environment before starting")
 
-# Motor client (async) with TLS fix
-client = motor.motor_asyncio.AsyncIOMotorClient(
-    MONGODB_URI,
-    tls=True,
-    tlsAllowInvalidCertificates=False
-)
+# Motor client (async) - TLS handled automatically by MongoDB+SRV
+client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
 db = client[MONGODB_DB]
 profiles_coll = db["user_profile"]
 diary_coll = db["diary"]
@@ -35,7 +31,7 @@ diary_coll = db["diary"]
 # FastAPI app
 app = FastAPI(title="AI Mental Health Companion - Backend (Mongo)")
 
-# CORS
+# CORS middleware
 origins = os.getenv("CORS_ORIGINS", "*").split(",") if os.getenv("CORS_ORIGINS") else ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -45,7 +41,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Schemas
+# -------------------------------
+# Pydantic schemas
+# -------------------------------
 class UserProfile(BaseModel):
     nickname: Optional[str] = ""
     age: Optional[str] = "select"
@@ -69,7 +67,9 @@ class DiaryOut(BaseModel):
     date: str
     text: str
 
-# Helper: get or create single profile
+# -------------------------------
+# Helper functions
+# -------------------------------
 async def get_or_create_profile():
     p = await profiles_coll.find_one({})
     if not p:
@@ -85,7 +85,18 @@ async def get_or_create_profile():
         return doc
     return p
 
-# Profile endpoints
+def get_gemini_response(prompt: str) -> str:
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        content = [prompt]
+        response = model.generate_content(content)
+        return response.text
+    except Exception as e:
+        return f"Error generating response: {str(e)}"
+
+# -------------------------------
+# Routes
+# -------------------------------
 @app.get("/profile", response_model=UserProfile)
 async def read_profile():
     p = await get_or_create_profile()
@@ -117,7 +128,6 @@ async def update_profile(profile: UserProfile):
         medical_conditions=new_p.get("medical_conditions", "None")
     )
 
-# Diary endpoints
 @app.post("/diary", response_model=DiaryOut)
 async def create_diary(entry: DiaryIn):
     date_str = entry.date or datetime.utcnow().strftime("%Y-%m-%d")
@@ -150,16 +160,6 @@ async def delete_diary(entry_id: str):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Diary entry not found")
     return {"ok": True}
-
-# Gemini helper
-def get_gemini_response(prompt: str) -> str:
-    try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        content = [prompt]
-        response = model.generate_content(content)
-        return response.text
-    except Exception as e:
-        return f"Error generating response: {str(e)}"
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
